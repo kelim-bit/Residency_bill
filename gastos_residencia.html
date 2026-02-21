@@ -163,7 +163,6 @@
   .color-row label{font-size:.78rem;color:var(--text-soft);flex:1;}
   .color-row input[type=color]{width:34px;height:34px;border:none;border-radius:50%;
     cursor:pointer;padding:2px;background:none;}
-
   .btn-copy-prev{background:transparent;border:1px dashed var(--lilac);color:var(--lilac-dark);
     border-radius:10px;padding:.28rem .8rem;font-family:'DM Sans',sans-serif;font-size:.76rem;
     font-weight:500;cursor:pointer;transition:all .2s;white-space:nowrap;}
@@ -244,6 +243,15 @@
   .empty-state{text-align:center;padding:1.8rem;color:var(--text-muted);font-style:italic;
     font-family:'Cormorant Garamond',serif;font-size:1.05rem;}
 
+
+  .hidden{display:none !important;}
+  .auth-box{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);border-radius:12px;padding:.35rem .5rem;}
+  .auth-box input{border:none;outline:none;border-radius:8px;padding:.38rem .5rem;font-size:.75rem;min-width:120px;}
+  .auth-box .mini-btn{border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.22);color:#fff;border-radius:8px;padding:.34rem .55rem;font-size:.72rem;cursor:pointer;}
+  .auth-box .mini-btn:hover{background:rgba(255,255,255,.35);}
+  .user-chip{display:flex;align-items:center;gap:.5rem;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:999px;padding:.35rem .8rem;font-size:.78rem;}
+  .auth-status{max-width:1100px;margin:.7rem auto 0;padding:0 1.5rem;color:var(--text-soft);font-size:.8rem;}
+
   @media(max-width:680px){
     .add-expense-bar{grid-template-columns:1fr 1fr;}
     .header-title{font-size:1.3rem;}
@@ -288,7 +296,6 @@
   <div class="data-box">
     <h3>📂 Exportar / Importar dados</h3>
     <p>Exporte para compartilhar entre computador e celular, ou para ter um backup. Importe um arquivo salvo anteriormente.</p>
-
     <div style="font-size:.8rem;font-weight:600;color:var(--text-soft);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.7rem;">Exportar mês atual</div>
     <div class="export-grid">
       <div class="export-btn" onclick="exportXLSX()">
@@ -328,6 +335,16 @@
       <button class="btn-icon" onclick="openPalette()" title="Trocar cores">🎨</button>
     </div>
     <div class="header-right">
+      <div class="auth-box" id="authBox">
+        <input type="email" id="authEmail" placeholder="email">
+        <input type="password" id="authPass" placeholder="senha">
+        <button class="mini-btn" onclick="signInUser()">Entrar</button>
+        <button class="mini-btn" onclick="registerUser()">Criar conta</button>
+      </div>
+      <div class="user-chip hidden" id="userChip">
+        <span id="userEmail">Usuário</span>
+        <button class="mini-btn" onclick="signOutUser()">Sair</button>
+      </div>
       <div class="data-btns">
         <button class="btn-data" onclick="openData()">📂 <span>Dados</span></button>
       </div>
@@ -346,8 +363,9 @@
     </div>
   </div>
 </header>
+<div class="auth-status" id="authStatus">Conectando autenticação...</div>
 
-<main class="main">
+<main class="main hidden" id="mainContent">
   <div class="summary-grid">
     <div class="summary-card lilac">
       <div class="card-label">Gastos Fixos</div>
@@ -429,7 +447,11 @@
   </div>
 </main>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
+
 // ── DEFAULTS ──────────────────────────────────────────────────────
 const DEFAULT_FIXED = [
   {id:'aluguel',     label:'🏠 Aluguel',            val:0},
@@ -459,6 +481,16 @@ const DEFAULT_CATS = [
 
 // ── STATE ─────────────────────────────────────────────────────────
 let data = {}, globalCats = [], currentKey = '', currentFilter = 'todos';
+let authRef = null, dbRef = null, currentUser = null, isHydratingCloud = false, cloudSaveTimer = null;
+
+const FIREBASE_CONFIG = {
+  apiKey: 'COLOQUE_SUA_API_KEY',
+  authDomain: 'COLOQUE_SEU_AUTH_DOMAIN',
+  projectId: 'COLOQUE_SEU_PROJECT_ID',
+  storageBucket: 'COLOQUE_SEU_STORAGE_BUCKET',
+  messagingSenderId: 'COLOQUE_SEU_MESSAGING_SENDER_ID',
+  appId: 'COLOQUE_SEU_APP_ID'
+};
 
 // ── MONEY PARSING (vírgula e ponto) ───────────────────────────────
 function parseMoney(str) {
@@ -498,19 +530,27 @@ function confirmModal() {
 document.getElementById('modalInput').addEventListener('keypress',e=>{if(e.key==='Enter')confirmModal();});
 
 // ── STORAGE ───────────────────────────────────────────────────────
+function localKey(base) {
+  const uid = currentUser?.uid || 'anon';
+  return `${base}_${uid}`;
+}
 function loadStorage() {
   try {
-    const d = localStorage.getItem('gastos_v4');
-    const g = localStorage.getItem('gastos_cats_v4');
+    const d = localStorage.getItem(localKey('gastos_v5'));
+    const g = localStorage.getItem(localKey('gastos_cats_v5'));
     data = d ? JSON.parse(d) : {};
     globalCats = g ? JSON.parse(g) : JSON.parse(JSON.stringify(DEFAULT_CATS));
   } catch(e) { data={}; globalCats=JSON.parse(JSON.stringify(DEFAULT_CATS)); }
 }
 function saveStorage() {
   try {
-    localStorage.setItem('gastos_v4', JSON.stringify(data));
-    localStorage.setItem('gastos_cats_v4', JSON.stringify(globalCats));
+    localStorage.setItem(localKey('gastos_v5'), JSON.stringify(data));
+    localStorage.setItem(localKey('gastos_cats_v5'), JSON.stringify(globalCats));
+    if (currentUser && !isHydratingCloud) queueCloudSave();
   } catch(e) {}
+}
+function hasMeaningfulData() {
+  return Object.keys(data||{}).length>0 || (globalCats||[]).length !== DEFAULT_CATS.length;
 }
 function ensureMonth(key) {
   if (!data[key]) data[key] = {
@@ -556,7 +596,7 @@ function renderFixed() {
   });
   const add = document.createElement('button');
   add.className = 'add-item-card';
-  add.innerHTML = `<span class="plus">+</span><span>Novo item fixo</span>`;
+    add.innerHTML = `<span class="plus">+</span><span>Novo item fixo</span>`;
   add.onclick = ()=> openModal('Novo gasto fixo','Ex: 🏥 Plano de saúde', name=>{
     data[currentKey].fixed.push({id:'c'+Date.now(),label:name,val:0});
     saveStorage(); renderFixed(); updateSummary();
@@ -733,15 +773,15 @@ function renderAll() {
   renderExpenses(); updateSummary();
 }
 
-// ── TITLE ─────────────────────────────────────────────────────────
+// ── TITLE ────────────────────────────────────────────────────────
 function saveTitle() {
   const el = document.getElementById('appTitle');
   const val = el.textContent.trim();
   if (!val) el.textContent = '🌸 Gastos da Residência';
-  localStorage.setItem('gastos_title_v4', el.textContent);
+  localStorage.setItem(localKey('gastos_title_v5'), el.textContent);
 }
 function loadTitle() {
-  const t = localStorage.getItem('gastos_title_v4');
+  const t = localStorage.getItem(localKey('gastos_title_v5'));
   if (t) document.getElementById('appTitle').textContent = t;
 }
 
@@ -762,7 +802,7 @@ function applyPalette(pal) {
   r.setProperty('--pink-light',pal.c4); r.setProperty('--lilac',pal.c1+'99');
   r.setProperty('--pink',pal.c2+'99'); r.setProperty('--text',pal.text);
   document.querySelector('header').style.background=`linear-gradient(135deg,${pal.c1} 0%,${pal.c2} 100%)`;
-  currentPalette=pal; localStorage.setItem('gastos_palette_v4',JSON.stringify(pal));
+  currentPalette=pal; localStorage.setItem(localKey('gastos_palette_v5'),JSON.stringify(pal));
   renderPaletteGrid();
 }
 function applyCustomColor() {
@@ -793,7 +833,7 @@ function openPalette() { renderPaletteGrid(); document.getElementById('palettePa
 function closePalette() { document.getElementById('palettePanel').classList.remove('open'); }
 function closePaletteOutside(e) { if(e.target===document.getElementById('palettePanel')) closePalette(); }
 function loadPalette() {
-  const s=localStorage.getItem('gastos_palette_v4');
+  const s=localStorage.getItem(localKey('gastos_palette_v5'));
   if(s) try{applyPalette(JSON.parse(s));}catch(e){}
 }
 
@@ -957,7 +997,7 @@ function exportPDF() {
   win.onload = ()=>{ win.print(); };
 }
 
-// ── HELPERS ───────────────────────────────────────────────────────
+// ── HELPERS ──────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -996,19 +1036,131 @@ function copyPrevMonth(section) {
   updateSummary();
 }
 
+// ── FIREBASE / AUTH ───────────────────────────────────────────────
+function firebaseConfigured() {
+  return Object.values(FIREBASE_CONFIG).every(v => v && !String(v).startsWith('COLOQUE_'));
+}
+function setAuthStatus(msg) {
+  document.getElementById('authStatus').textContent = msg;
+}
+function setMainVisibility(isVisible) {
+  document.getElementById('mainContent').classList.toggle('hidden', !isVisible);
+}
+function updateAuthUI() {
+  const logged = !!currentUser;
+  document.getElementById('authBox').classList.toggle('hidden', logged);
+  document.getElementById('userChip').classList.toggle('hidden', !logged);
+  if (logged) document.getElementById('userEmail').textContent = currentUser.email || 'Usuário autenticado';
+}
+async function queueCloudSave() {
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(pushDataToCloud, 900);
+}
+async function pushDataToCloud() {
+  if (!currentUser || !dbRef || isHydratingCloud) return;
+  const payload = {
+    data,
+    globalCats,
+    title: document.getElementById('appTitle').textContent || '🌸 Gastos da Residência',
+    palette: currentPalette || null,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  await dbRef.collection('users_finance').doc(currentUser.uid).set(payload, {merge: true});
+}
+async function pullDataFromCloud() {
+  if (!currentUser || !dbRef) return false;
+  const snap = await dbRef.collection('users_finance').doc(currentUser.uid).get();
+  if (!snap.exists) return false;
+  const cloud = snap.data() || {};
+  isHydratingCloud = true;
+  try {
+    data = cloud.data && typeof cloud.data === 'object' ? cloud.data : {};
+    globalCats = Array.isArray(cloud.globalCats) ? cloud.globalCats : JSON.parse(JSON.stringify(DEFAULT_CATS));
+    if (typeof cloud.title === 'string' && cloud.title.trim()) {
+      document.getElementById('appTitle').textContent = cloud.title;
+      saveTitle();
+    }
+    if (cloud.palette && typeof cloud.palette === 'object') {
+      applyPalette(cloud.palette);
+      currentPalette = cloud.palette;
+      savePalette();
+    }
+    saveStorage();
+  } finally {
+    isHydratingCloud = false;
+  }
+  return true;
+}
+async function handleUserSession(user) {
+  currentUser = user || null;
+  updateAuthUI();
+  if (!currentUser) {
+    data = {};
+    globalCats = JSON.parse(JSON.stringify(DEFAULT_CATS));
+    setMainVisibility(false);
+    setAuthStatus('Faça login para acessar seus dados com segurança.');
+    return;
+  }
+  loadStorage();
+  loadTitle();
+  loadPalette();
+  const hadCloud = await pullDataFromCloud();
+  if (!hadCloud && hasMeaningfulData()) await pushDataToCloud();
+  currentKey = getKey();
+  ensureMonth(currentKey);
+  renderAll();
+  setMainVisibility(true);
+  setAuthStatus(`Sessão segura ativa: ${currentUser.email}`);
+}
+async function signInUser() {
+  if (!authRef) return alert('Firebase não configurado. Preencha FIREBASE_CONFIG.');
+  const email = document.getElementById('authEmail').value.trim();
+  const pass = document.getElementById('authPass').value;
+  if (!email || !pass) return alert('Informe email e senha.');
+  try {
+    await authRef.signInWithEmailAndPassword(email, pass);
+    document.getElementById('authPass').value = '';
+  } catch (e) {
+    alert('Falha no login. Verifique email/senha.');
+  }
+}
+async function registerUser() {
+  if (!authRef) return alert('Firebase não configurado. Preencha FIREBASE_CONFIG.');
+  const email = document.getElementById('authEmail').value.trim();
+  const pass = document.getElementById('authPass').value;
+  if (!email || pass.length < 6) return alert('Senha mínima de 6 caracteres.');
+  try {
+    await authRef.createUserWithEmailAndPassword(email, pass);
+    document.getElementById('authPass').value = '';
+  } catch (e) {
+    alert('Não foi possível criar conta. Use outro email.');
+  }
+}
+async function signOutUser() {
+  if (authRef) await authRef.signOut();
+}
+async function initFirebaseAndAuth() {
+  if (!firebaseConfigured()) {
+    setAuthStatus('Configure o FIREBASE_CONFIG no código para ativar login e nuvem.');
+    return;
+  }
+  firebase.initializeApp(FIREBASE_CONFIG);
+  authRef = firebase.auth();
+  dbRef = firebase.firestore();
+  await authRef.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+  authRef.onAuthStateChanged((user)=>{
+    handleUserSession(user).catch(()=>setAuthStatus('Erro ao carregar sessão.'));
+  });
+}
+
 // ── INIT ──────────────────────────────────────────────────────────
-loadStorage();
-loadTitle();
-loadPalette();
 const now = new Date();
 document.getElementById('monthSelect').value = now.getMonth()+1;
 document.getElementById('yearInput').value   = now.getFullYear();
-currentKey = getKey();
-ensureMonth(currentKey);
-renderAll();
-
 document.getElementById('exp-desc').addEventListener('keypress',e=>{if(e.key==='Enter')document.getElementById('exp-val').focus();});
 document.getElementById('exp-val').addEventListener('keypress', e=>{if(e.key==='Enter')addExpense();});
+initFirebaseAndAuth();
 </script>
 </body>
 </html>
+
